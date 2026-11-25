@@ -1,3 +1,73 @@
 a.
+Adversarial sequence. Insert points that converge geometrically toward one corner, so that
+every split peels off only a constant number of points and pushes all the rest into the same
+child quadrant. For example, for k = 1, 2, ..., n insert
+
+    p_k = (3/4 * 2^-k, 3/4 * 2^-k) = (0.375, 0.375), (0.1875, 0.1875), (0.09375, 0.09375), ...
+
+At the root (cell [0,1]^2, center 0.5) every point is in the NW quadrant. In the NW child
+(cell [0,1/2]^2, center 1/4) p_1 = (0.375, 0.375) goes SE and every other point goes NW again.
+In general the cell [0, 2^-k]^2 sends exactly p_k to its SE child and all of p_{k+1}, p_{k+2}, ...
+to its NW child. So the tree is a single chain of NW children that is about n levels deep
+(minus the leaf capacity). Each level has one non-empty "side" leaf and two empty ones, which
+makes it a linked list with extra steps. (In our implementation MAX_DEPTH = 8 caps the chain,
+but then the deepest leaf just holds the other n - O(1) points in its primitive list. That is
+literally a list.)
+
+Constant-time query: the point q = (0.9, 0.9) (or anything with x > 1/2 or y > 1/2). At the
+root it overlaps only the SE child, which is an empty leaf, so the query visits 2 nodes and
+checks 0 primitives no matter how large n is. That is O(1).
+
+O(n) query: the point q = (0, 0) (or (eps, eps) for eps smaller than every p_k). Every cell on
+the chain [0, 2^-k]^2 contains q, so the query descends through all ~n levels of the chain.
+With the depth cap, it instead reaches the bottom leaf and scans its ~n primitives. Either way
+the cost is Theta(n).
+
 b.
+Inserting the same point over and over with capacity 8: the 9th insertion overflows the leaf
+and triggers a split, but all 9 copies go into the same child, because identical points can
+never be separated by any splitting line. That child is now over capacity, and so on.
+- With a "split until every leaf has <= 8 primitives" rule, this never terminates (infinite
+  recursion / unbounded memory) until float precision collapses the cell to zero width.
+- With our implementation (one split per insert, MAX_DEPTH = 8), each new insertion makes the
+  chain one level deeper and allocates 4 nodes, 3 of them empty, until depth 8. After that
+  the bottom leaf grows without bound. Memory is wasted on useless nodes, and any query at
+  that point scans a list of all n copies, which is O(n).
+So yes, it is a problem. Ways to alleviate it:
+- Hard limits: a maximum depth (as we have) and/or a minimum cell size. These bound the memory
+  but not the cost of scanning the leaf.
+- Do not split if splitting would not help: before splitting, check whether all of the leaf's
+  primitives would land in the same child (e.g. their combined AABB fits in one quadrant).
+  If so, let the leaf exceed capacity instead of creating empty nodes.
+- Deduplicate coincident points: store one entry per distinct position together with a count
+  or a bucket of the IDs at that position. The tree then partitions distinct locations, and
+  duplicates cost O(1) each.
+
 c.
+A quadtree is a spatial partition anchored to a fixed, axis-aligned world-space grid
+(mBounds, halved recursively). Its structure is a function of where the objects are relative to
+that fixed grid. So any transform of the whole scene changes which cells the objects belong to:
+- Translation: unless the offset happens to be a multiple of the cell size at every relevant
+  level, objects cross split lines and must be removed and reinserted. Effectively this is a
+  full rebuild. Objects near a center line flip between deep leaves and the straddler list of a
+  shallow ancestor, so even a tiny shift can greatly change the tree. Objects can also leave
+  mBounds entirely, which forces a bigger root region and a rebuild.
+- Rotation (e.g. 13 degrees): the grid is axis-aligned, so after rotation every object's AABB
+  grows (a rotated box's AABB is larger). Objects straddle more split lines and get stuck
+  higher in the tree, and every object's cell changes, so again it is a full rebuild. A 13 degree
+  rotation about the x-axis (in 3D, viewed in the xy plane) squashes y by cos(13 deg). That
+  also moves objects across horizontal split lines and changes the structure.
+- The one cheap case: if the entire scene moves rigidly together, you can leave the tree
+  alone, store the transform, and apply the inverse transform to each query instead (as with
+  BVH instancing). For a rotation, though, the inverse-transformed query must be re-wrapped in an
+  AABB, which is looser, so you get more false-positive candidates. As soon as objects move
+  relative to each other, this trick no longer applies.
+
+Conclusion: quadtrees suit data that is mostly static, lives in a known bounded region, and is
+spread fairly uniformly with small, similarly sized objects or points. Examples are static level
+geometry, tile maps/terrain, point-cloud or GIS range queries, and image/LOD subdivision. In
+those cases the simple, deterministic, cheap-to-build structure works well. Quadtrees do not
+suit scenes where objects (or the whole scene) are transformed, move quickly, are heavily
+clustered, vary greatly in size, or live in an unbounded world. In those cases an
+object-based hierarchy such as a BVH (which can be refit, translated, or instanced without
+rebuilding) is a better fit.

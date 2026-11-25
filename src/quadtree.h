@@ -178,8 +178,37 @@ public:
     // Appends primitive indicies whose bounds intersect with the given queryBounds to candidates.
     // Returns the number of intersection candidates found
     uint32_t queryIntersecting(const AABB<float>& queryBounds, std::vector<uint32_t>& candidates) {
-        // TODO -- do not use recursion, but you may emulate it yourself.
-        return 0;
+        uint32_t found = 0;
+        // Each stack frame is {node index, the cell region that node covers}.
+        mQueryStack.clear();
+        if (mBounds.intersects(queryBounds)) {
+            mQueryStack.push_back({0, mBounds});
+        }
+        while (!mQueryStack.empty()) {
+            const auto [nodeIdx, cell] = mQueryStack.back();
+            mQueryStack.pop_back();
+            const QuadTreeNode& node = mNodes[nodeIdx];
+
+            // Primitives stored here: leaf contents, or straddlers if this is an internal node.
+            for (uint32_t p = node.primitivesIdx; p != INVALID_IDX; p = mNextPrimitiveIdx[p]) {
+                if (mPrimitiveBounds[p].intersects(queryBounds)) {
+                    candidates.push_back(p);
+                    ++found;
+                }
+            }
+
+            if (!node.isLeaf()) {
+                // "Recurse" only into children whose cell overlaps the query.
+                for (uint32_t dir = 0; dir < 4; ++dir) {
+                    AABB<float> childCell = cell;
+                    aabbEnter(childCell, static_cast<OrdinalDirection>(dir));
+                    if (childCell.intersects(queryBounds)) {
+                        mQueryStack.push_back({node.childIdx + dir, childCell});
+                    }
+                }
+            }
+        }
+        return found;
     }
 
     // suitable for sparse updates
@@ -290,15 +319,52 @@ private:
     // Precondition: currentCell contains query.
     OrdinalDirection aabbQueryQuadrant(const AABB<float>& query,
                                        const AABB<float>& currentCell) const {
-        return {};
-    };
-    // TODO
+        const sf::Vector2f mid = currentCell.middle();
+        // Child cells are closed, so a query touching the center line from one side still fits
+        // in that side's child. Ties (query lies exactly on the line) go west / north,
+        // which matches aabbEnter.
+        uint32_t col;
+        if (query.maxPoint.x <= mid.x) {
+            col = 0;  // west
+        } else if (query.minPoint.x >= mid.x) {
+            col = 1;  // east
+        } else {
+            return OrdinalDirection::INVALID_DIRECTION;
+        }
+        // SFML coordinates: y grows downwards, so "north" is the smaller-y half.
+        uint32_t row;
+        if (query.maxPoint.y <= mid.y) {
+            row = 0;  // north
+        } else if (query.minPoint.y >= mid.y) {
+            row = 1;  // south
+        } else {
+            return OrdinalDirection::INVALID_DIRECTION;
+        }
+        return static_cast<OrdinalDirection>(row * 2 + col);
+    }
 
     // modifies a given AABB to obtain the resulting AABB if we were entering the cell on its
     // "direction" quadrant
     // Precondition: direction is not INVALID
-    void aabbEnter(AABB<float>& bounds, OrdinalDirection direction) const {};
-    // TODO
+    void aabbEnter(AABB<float>& bounds, OrdinalDirection direction) const {
+        assert(direction != OrdinalDirection::INVALID_DIRECTION);
+        const sf::Vector2f mid = bounds.middle();
+        // low bit: west (0) / east (1)
+        if (direction & 1) {
+            bounds.minPoint.x = mid.x;
+        } else {
+            bounds.maxPoint.x = mid.x;
+        }
+        // high bit: north (0) / south (1)
+        if (direction & 2) {
+            bounds.minPoint.y = mid.y;
+        } else {
+            bounds.maxPoint.y = mid.y;
+        }
+    }
+
+    // Reused across queries to avoid a heap allocation per query.
+    std::vector<std::pair<uint32_t, AABB<float>>> mQueryStack;
 
     AABB<float> mBounds;
     size_t mMaxPrimitivesPerLeaf;
